@@ -1,0 +1,128 @@
+name: Upbit Sell Signal Monitor
+
+on:
+  schedule:
+    # 30분마다 실행 (급락 빠른 감지)
+    - cron: '0,30 * * * *'
+  
+  workflow_dispatch:  # 수동 실행 가능
+
+permissions:
+  contents: write  # Git push를 위해 필수!
+
+jobs:
+  monitor-sell-signals:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        token: ${{ secrets.GITHUB_TOKEN }}
+    
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.10'
+        cache: 'pip'
+    
+    - name: Install dependencies
+      run: |
+        pip install pyupbit pandas numpy requests pytz ta openpyxl
+    
+    - name: Create config file
+      run: |
+        cat > config.py << 'EOF'
+        # 텔레그램 설정
+        BOT_TOKEN = "${{ secrets.TELEGRAM_BOT_TOKEN }}"
+        CHAT_ID = "${{ secrets.TELEGRAM_CHAT_ID }}"
+        
+        # ============================================
+        # 가격 패턴 분석 설정
+        # ============================================
+        
+        # 10분봉 데이터 개수 (72개 = 12시간)
+        MINUTE_10_COUNT = 72
+        
+        # 60분봉 데이터 개수 (24개 = 24시간)
+        MINUTE_60_COUNT = 24
+        
+        # 단기 급락 감지 (10분봉 기준)
+        QUICK_DROP_LOOKBACK = 18  # 최근 N개 봉 중 최고가 확인 (18개 = 3시간)
+        QUICK_DROP_THRESHOLD = 5.0  # 급락 임계값 (%)
+        
+        # 중기 고점 대비 하락 (60분봉 기준)
+        DROP_FROM_HIGH_12H_THRESHOLD = 8.0  # 12시간 고점 대비 하락 임계값 (%)
+        
+        # 급등 후 하락 전환 감지
+        SURGE_6H_THRESHOLD = 15.0  # 6시간 급등 임계값 (%)
+        CHANGE_1H_THRESHOLD = -3.0  # 1시간 하락 임계값 (%)
+        
+        # 변동성 체크
+        VOLATILITY_CHECK_CANDLES = 6  # 최근 N개 봉의 변동성 확인
+        VOLATILITY_THRESHOLD = 3.0  # 평균 변동률 임계값 (%)
+        
+        # 필터링 (너무 약한 신호 제외)
+        MIN_QUICK_DROP = 2.0  # 최소 단기 급락 (%)
+        MIN_DROP_12H = 3.0  # 최소 12시간 하락 (%)
+        
+        # ============================================
+        # 거래량 분석 설정
+        # ============================================
+        
+        # 거래량 감소 추세 확인 일수
+        VOLUME_DECLINE_DAYS = 3
+        
+        # 가격-거래량 다이버전스
+        DIVERGENCE_LOOKBACK_DAYS = 7
+        DIVERGENCE_PRICE_THRESHOLD = 10.0  # 가격 상승 임계값 (%)
+        DIVERGENCE_VOLUME_THRESHOLD = -20.0  # 거래량 감소 임계값 (%)
+        
+        # ============================================
+        # 호가창 분석 설정
+        # ============================================
+        
+        # 매도/매수 비율 임계값
+        ORDERBOOK_THRESHOLD = 1.3  # 매도가 매수보다 1.3배 이상
+        
+        # ============================================
+        # 기술적 지표 설정
+        # ============================================
+        
+        # RSI
+        RSI_OVERBOUGHT = 70  # 과매수 기준
+        RSI_HIGH = 60  # 고점권 기준
+        
+        # 볼린저 밴드
+        BB_HIGH_THRESHOLD = 80  # 상단 근접 기준 (%)
+        
+        # 스토캐스틱
+        STOCH_OVERBOUGHT = 80  # 과매수 기준
+        STOCH_HIGH = 70  # 고점권 기준
+        
+        # ============================================
+        # 매도 단계 기준
+        # ============================================
+        
+        # 신호 강도 기준 (10개 지표 중)
+        SELL_STAGE_IMMEDIATE = 7  # 즉시매도: 7개 이상
+        SELL_STAGE_PREPARE = 5    # 매도준비: 5-6개
+        SELL_STAGE_REVIEW = 3     # 매도검토: 3-4개
+        EOF
+    
+    - name: Run sell signal monitor
+      run: |
+        python upbit_sell_monitor_actions.py
+    
+    - name: Commit and push if changed
+      run: |
+        git config --global user.name 'GitHub Actions Bot'
+        git config --global user.email 'actions@github.com'
+        git add market_data/ analysis_reports/ upbit_sell_signals_v2.xlsx
+        
+        if git diff --staged --quiet; then
+          echo "No changes to commit"
+        else
+          git commit -m "🔴 매도 신호 분석 업데이트 - $(date -u +'%Y-%m-%d %H:%M:%S') UTC"
+          git push
+        fi
